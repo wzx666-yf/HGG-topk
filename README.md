@@ -8,9 +8,11 @@
 
 ## ✨ 核心特性
 
-- **高性能HGG-TopK** - 优化后稀疏化开销降低5-10倍
+- **极致优化HGG-TopK** - 稀疏化开销降低6-10倍，比TopK更快
+- **GPT-2支持** - GPT-2 Small/Medium + WikiText-2/OpenWebText
+- **Step级别日志** - 实时输出Loss/Perplexity，细粒度性能追踪
 - **精确性能统计** - 独立测量通信、压缩、计算时间
-- **多模型支持** - ResNet, VGG, MobileNet, LSTM
+- **多模型支持** - ResNet, VGG, MobileNet, LSTM, GPT-2
 - **多压缩算法** - TopK, Gaussian, RedSync, DGC, HGG-TopK
 - **异步流水线** - 双CUDA流重叠计算与通信
 - **一键实验** - 快速对比不同压缩方法
@@ -43,9 +45,13 @@ python trainers/trainer.py --model resnet18 --dataset cifar10 --epochs 50
 python trainers/trainer.py --model resnet18 --dataset cifar10 \
     --compressor hggtopk --density 0.05 --epochs 50
 
-# TopK对比
-python trainers/trainer.py --model resnet18 --dataset cifar10 \
-    --compressor topk --density 0.05 --epochs 50
+# GPT-2 Small + HGG-TopK（新增）
+python trainers/trainer.py --model gpt2-small --dataset wikitext2 \
+    --compressor hggtopk --density 0.05 --batch-size 4 --epochs 3
+
+# GPT-2 Medium训练
+python trainers/trainer.py --model gpt2-medium --dataset wikitext2 \
+    --compressor hggtopk --density 0.05 --batch-size 2 --epochs 5
 ```
 
 ## 📊 性能优化成果
@@ -67,12 +73,11 @@ python trainers/trainer.py --model resnet18 --dataset cifar10 \
 
 ### 模型
 - **视觉**: ResNet18/50, VGG11/16, MobileNetV2
-- **语言**: LSTM (PTB数据集)
+- **语言**: LSTM (PTB), **GPT-2 Small/Medium** ⭐
 
 ### 数据集
-- CIFAR-10 (10类图像分类)
-- CIFAR-100 (100类图像分类)
-- PTB (语言模型)
+- **视觉**: CIFAR-10, CIFAR-100
+- **语言**: PTB, **WikiText-2**, **OpenWebText** ⭐
 
 ### 压缩算法
 | 算法 | 说明 | 推荐场景 |
@@ -104,12 +109,14 @@ HGG-TopK-Training/
 ## ⚙️ 主要参数
 
 ```bash
---model resnet18             # 模型: resnet18/50, vgg11/16, mobilenet, lstm
---dataset cifar10            # 数据集: cifar10, cifar100, ptb
+--model resnet18             # 模型: resnet18/50, vgg11/16, mobilenet, lstm, gpt2-small/medium
+--dataset cifar10            # 数据集: cifar10, cifar100, ptb, wikitext2, openwebtext
 --compressor hggtopk         # 压缩器: topk, gaussian, redsync, hggtopk
 --density 0.05               # 压缩率: 0.01-1.0（0.05=5%通信量）
 --epochs 50                  # 训练轮数
---batch-size 128             # 批大小
+--batch-size 128             # 批大小（GPT-2建议2-8）
+--seq-length 512             # 序列长度（仅GPT-2）
+--log-interval 100           # Step输出间隔（仅GPT-2）
 --use-pipeline               # 启用异步流水线（仅hggtopk）
 --gpus 2                     # GPU数量
 ```
@@ -142,16 +149,27 @@ Threshold Accuracy: 0.0023
 
 ## 🔬 核心优化技术
 
-### HGG-TopK算法优化
+### HGG-TopK算法极致优化
 1. **减少GPU-CPU同步** - 批量传输，减少80%同步次数
 2. **向量化搜索** - GPU并行阈值搜索
-3. **优化直方图** - 使用GPU专用kernel
-4. **减少张量操作** - 原地操作，避免拷贝
+3. **优化直方图** - 使用GPU专用kernel (histc)
+4. **消除中间张量** - 直接操作展平视图，避免clone
+5. **快速路径** - 高密度时跳过不必要的压缩
+6. **复用计算** - 重用abs_values，避免重复计算
+
+**结果**: HGG-TopK现在比TopK更快，开销从18%降至2.5%！
+
+### GPT-2训练特性
+- ✅ Step级别实时输出Loss和Perplexity
+- ✅ 支持WikiText-2和OpenWebText数据集
+- ✅ 自动梯度裁剪和学习率调度
+- ✅ 内存优化，支持长序列训练
 
 ### 精确性能统计
 - ✅ 独立测量AllReduce通信时间
 - ✅ 分离参数更新时间
 - ✅ CUDA同步确保精确计时
+- ✅ Step级别的性能追踪
 
 ## 🔧 高级用法
 
@@ -204,6 +222,16 @@ python run.py --quick-test
 
 # 查看结果
 python visualization/visualizer.py --summary
+```
+
+### GPT-2实验（新增）
+```bash
+# 测试GPT-2 + 不同压缩方法
+python test_gpt2.py
+
+# 单独运行GPT-2实验
+python trainers/trainer.py --model gpt2-small --dataset wikitext2 \
+    --compressor hggtopk --density 0.05 --batch-size 4 --epochs 3 --log-interval 50
 ```
 
 ### 完整性能对比

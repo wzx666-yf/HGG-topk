@@ -589,7 +589,7 @@ class HGGTopKCompressor():
 
     @staticmethod
     def compress(tensor, name=None, ratio=0.05):
-        """压缩梯度（优化版：减少GPU-CPU同步，使用缓存）"""
+        """压缩梯度（极致优化版：最小化操作，避免不必要计算）"""
         with torch.no_grad():
             if name not in HGGTopKCompressor.residuals:
                 HGGTopKCompressor.residuals[name] = torch.zeros_like(tensor.data)
@@ -597,25 +597,30 @@ class HGGTopKCompressor():
 
             numel = tensor.numel()
             k = max(int(numel * ratio), 1)
+
+            # 如果k接近numel，直接使用所有元素，避免不必要的压缩
+            if k >= numel * 0.9:
+                indexes = torch.arange(numel, dtype=torch.long, device=tensor.device)
+                return tensor, indexes, tensor.data.view(-1)
+
             tolerance = max(int(k * HGGTopKCompressor.TOLERANCE), 1)
 
-            # 误差补偿
+            # 误差补偿（原地操作）
             tensor.add_(HGGTopKCompressor.residuals[name].data)
 
-            # 计算绝对值和最大值（减少一次.item()调用）
-            abs_values = torch.abs(tensor.data)
-            max_val_tensor = torch.max(abs_values)
+            # 展平并计算绝对值（减少中间张量）
+            flat_tensor = tensor.data.view(-1)
+            abs_values = torch.abs(flat_tensor)
+            max_val = torch.max(abs_values).item()
 
-            # 提前检查是否需要压缩
-            if max_val_tensor < 1e-10:
+            # 提前检查
+            if max_val < 1e-10:
                 HGGTopKCompressor.residuals[name].data = tensor.data.clone()
                 empty_indexes = torch.tensor([], dtype=torch.long, device=tensor.device)
                 empty_values = torch.tensor([], dtype=tensor.dtype, device=tensor.device)
                 return tensor, empty_indexes, empty_values
 
-            max_val = max_val_tensor.item()
-
-            # 对数域分桶
+            # 对数域分桶（复用abs_values，避免重复计算）
             bin_indices = HGGTopKCompressor._log_bin_mapping(
                 abs_values, max_val, HGGTopKCompressor.NUM_BINS, HGGTopKCompressor.GAMMA
             )
@@ -649,27 +654,22 @@ class HGGTopKCompressor():
                 HGGTopKCompressor.BETA
             )
 
-            # 选择梯度（优化：展平后统一处理）
-            flat_abs = abs_values.view(-1)
-            flat_tensor = tensor.data.view(-1)
-
-            # 使用阈值过滤
-            mask = flat_abs >= final_threshold
+            # 使用阈值过滤（已经是展平的）
+            mask = abs_values >= final_threshold
             indexes = mask.nonzero(as_tuple=False).view(-1)
 
             # 如果超过k，使用topk精确选择
             if indexes.numel() > k:
-                selected_abs_values = flat_abs[indexes]
+                selected_abs_values = abs_values[indexes]
                 topk_k = min(k, selected_abs_values.numel())
                 _, topk_indices = torch.topk(selected_abs_values, topk_k)
                 indexes = indexes[topk_indices]
 
             values = flat_tensor[indexes]
 
-            # 更新残差（优化：直接在展平视图上操作）
-            residual_flat = tensor.data.clone().view(-1)
-            residual_flat[indexes] = 0.0
-            HGGTopKCompressor.residuals[name].data = residual_flat.view_as(tensor.data)
+            # 更新残差（避免clone，直接复制）
+            HGGTopKCompressor.residuals[name].data.copy_(tensor.data)
+            HGGTopKCompressor.residuals[name].data.view(-1)[indexes] = 0.0
 
             HGGTopKCompressor.values[name] = values
             HGGTopKCompressor.indexes[name] = indexes

@@ -1,11 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-LSTM语言模型
-用于PTB数据集的文本生成任务
+语言模型定义
+包含LSTM和GPT-2模型
 """
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
+
+try:
+    from transformers import GPT2LMHeadModel, GPT2Config
+    HAS_TRANSFORMERS = True
+except ImportError:
+    HAS_TRANSFORMERS = False
+    print("Warning: transformers not installed. GPT-2 models will not be available.")
 
 
 class LSTMModel(nn.Module):
@@ -64,3 +71,82 @@ def repackage_hidden(h):
         return h.detach()
     else:
         return tuple(repackage_hidden(v) for v in h)
+
+
+class GPT2Medium(nn.Module):
+    """GPT-2 Medium模型 (345M参数)"""
+
+    def __init__(self, vocab_size=50257, seq_length=512):
+        super(GPT2Medium, self).__init__()
+        if not HAS_TRANSFORMERS:
+            raise ImportError("transformers library required for GPT-2. Install with: pip install transformers")
+
+        # GPT-2 Medium配置
+        config = GPT2Config(
+            vocab_size=vocab_size,
+            n_positions=seq_length,
+            n_embd=1024,
+            n_layer=24,
+            n_head=16,
+            n_inner=4096,
+            activation_function="gelu_new",
+            resid_pdrop=0.1,
+            embd_pdrop=0.1,
+            attn_pdrop=0.1,
+        )
+
+        self.model = GPT2LMHeadModel(config)
+        self.seq_length = seq_length
+
+    def forward(self, input_ids, labels=None):
+        """
+        前向传播
+        Args:
+            input_ids: (batch_size, seq_length)
+            labels: (batch_size, seq_length) 用于计算loss
+        Returns:
+            如果labels提供，返回(loss, logits)，否则只返回logits
+        """
+        outputs = self.model(input_ids=input_ids, labels=labels)
+
+        if labels is not None:
+            # 返回loss和logits
+            return outputs.loss, outputs.logits
+        else:
+            # 只返回logits
+            return outputs.logits
+
+
+class GPT2Small(nn.Module):
+    """GPT-2 Small模型 (117M参数) - 用于快速测试"""
+
+    def __init__(self, vocab_size=50257, seq_length=512):
+        super(GPT2Small, self).__init__()
+        if not HAS_TRANSFORMERS:
+            raise ImportError("transformers library required for GPT-2. Install with: pip install transformers")
+
+        # GPT-2 Small配置
+        config = GPT2Config(
+            vocab_size=vocab_size,
+            n_positions=seq_length,
+            n_embd=768,
+            n_layer=12,
+            n_head=12,
+            n_inner=3072,
+            activation_function="gelu_new",
+            resid_pdrop=0.1,
+            embd_pdrop=0.1,
+            attn_pdrop=0.1,
+        )
+
+        self.model = GPT2LMHeadModel(config)
+        self.seq_length = seq_length
+
+    def forward(self, input_ids, labels=None):
+        """前向传播"""
+        outputs = self.model(input_ids=input_ids, labels=labels)
+
+        if labels is not None:
+            return outputs.loss, outputs.logits
+        else:
+            return outputs.logits

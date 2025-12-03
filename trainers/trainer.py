@@ -31,8 +31,9 @@ from datetime import timedelta
 
 from core.compression import compressors
 from core.hgg_pipeline import HGGPipelineCompressor
-from core.models import LSTMModel, repackage_hidden
+from core.models import LSTMModel, GPT2Medium, GPT2Small, repackage_hidden
 from data_utils.ptb_reader import ptb_raw_data, PTBDataset
+from data_utils.gpt2_data import create_gpt2_dataloaders
 
 
 class Trainer:
@@ -41,6 +42,7 @@ class Trainer:
     def __init__(self, rank, world_size, **kwargs):
         self.rank = rank
         self.world_size = world_size
+        self.kwargs = kwargs  # 保存所有kwargs
         self.model_name = kwargs.get('model_name', 'resnet18')
         self.dataset = kwargs.get('dataset', 'cifar10')
         self.batch_size = kwargs.get('batch_size', 128)
@@ -55,6 +57,7 @@ class Trainer:
         # 判断模型类型
         self.is_vision = self.model_name in ['resnet18', 'resnet50', 'vgg11', 'vgg16', 'mobilenet']
         self.is_lstm = self.model_name == 'lstm'
+        self.is_gpt2 = self.model_name in ['gpt2-small', 'gpt2-medium']
 
         # 设置设备
         self.device = torch.device(f'cuda:{rank}')
@@ -74,6 +77,12 @@ class Trainer:
         self.communication_times = []
         self.update_times = []
         self.threshold_accuracies = []
+
+        # Step级别记录（用于GPT-2）
+        self.step_losses = []
+        self.step_perplexities = []
+        self.step_times = []
+        self.log_interval = kwargs.get('log_interval', 100)  # 每100步记录一次
 
         # 构建模型和数据
         self.model = self._build_model().to(self.device)
@@ -124,6 +133,12 @@ class Trainer:
                 model = models.mobilenet_v2(weights=None)
                 model.classifier[1] = nn.Linear(model.last_channel, num_classes)
                 return model
+        elif self.is_gpt2:
+            seq_length = self.kwargs.get('seq_length', 512)
+            if self.model_name == 'gpt2-small':
+                return GPT2Small(seq_length=seq_length)
+            elif self.model_name == 'gpt2-medium':
+                return GPT2Medium(seq_length=seq_length)
         elif self.is_lstm:
             train_data, _, _, word_to_id, _ = ptb_raw_data(self.data_dir, prefix="ptb")
             return LSTMModel(
@@ -139,6 +154,8 @@ class Trainer:
         """构建数据加载器"""
         if self.is_vision:
             return self._build_vision_loaders()
+        elif self.is_gpt2:
+            return self._build_gpt2_loaders()
         elif self.is_lstm:
             return self._build_lstm_loaders()
 
@@ -208,6 +225,22 @@ class Trainer:
         train_loader = DataLoader(train_dataset, batch_size=1, shuffle=False)
         test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 
+        return train_loader, test_loader
+
+    def _build_gpt2_loaders(self):
+        """构建GPT-2数据加载器"""
+        seq_length = self.kwargs.get('seq_length', 512)
+        dataset_name = self.dataset  # wikitext2 或 openwebtext
+
+        train_loader, valid_loader, test_loader, tokenizer = create_gpt2_dataloaders(
+            dataset_name=dataset_name,
+            data_dir=self.data_dir,
+            seq_length=seq_length,
+            batch_size=self.batch_size,
+            num_workers=2
+        )
+
+        self.tokenizer = tokenizer
         return train_loader, test_loader
 
     def _compute_threshold_accuracy(self, grad_tensor, selected_threshold, k):
@@ -289,8 +322,99 @@ class Trainer:
         comm_time = time.time() - start_time
         return comm_time
 
+    def train_epoch_gpt2(self, epoch):
+        """GPT-2训练一个epoch（step级别输出）"""
+        self.model.train()
+
+        running_loss = 0.0
+        total_tokens = 0
+
+        epoch_forward = 0.0
+        epoch_backward = 0.0
+        epoch_sparse = 0.0
+        epoch_comm = 0.0
+        epoch_update = 0.0
+        epoch_threshold_accs = []
+
+        epoch_start = time.time()
+        global_step = epoch * len(self.train_loader)
+
+        for batch_idx, batch in enumerate(self.train_loader):
+            input_ids = batch['input_ids'].to(self.device)
+            labels = batch['labels'].to(self.device)
+
+            self.optimizer.zero_grad()
+
+            # Forward
+            fwd_start = time.time()
+            loss, logits = self.model(input_ids, labels=labels)
+            fwd_time = time.time() - fwd_start
+
+            # Backward
+            bwd_start = time.time()
+            loss.backward()
+            bwd_time = time.time() - bwd_start
+
+            # Sparsification
+            sparse_time, threshold_acc = self._compress_gradients()
+
+            # Communication (AllReduce)
+            if self.compressor or self.pipeline:
+                comm_time = self._allreduce_gradients()
+                update_start = time.time()
+                self.optimizer.step()
+                update_time = time.time() - update_start
+            else:
+                comm_time = 0.0
+                update_start = time.time()
+                self.optimizer.step()
+                update_time = time.time() - update_start
+
+            # 统计
+            epoch_forward += fwd_time
+            epoch_backward += bwd_time
+            epoch_sparse += sparse_time
+            epoch_comm += comm_time
+            epoch_update += update_time
+            epoch_threshold_accs.append(threshold_acc)
+
+            running_loss += loss.item()
+            total_tokens += input_ids.numel()
+
+            current_step = global_step + batch_idx
+
+            # Step级别日志
+            if self.rank == 0 and batch_idx % self.log_interval == 0:
+                avg_loss = running_loss / (batch_idx + 1)
+                perplexity = torch.exp(torch.tensor(avg_loss)).item()
+                elapsed = time.time() - epoch_start
+
+                print(f'Epoch {epoch} Step {current_step} [{batch_idx}/{len(self.train_loader)}] '
+                      f'Loss: {avg_loss:.4f} PPL: {perplexity:.2f} '
+                      f'Time: {elapsed:.1f}s')
+
+                # 记录step级别数据
+                self.step_losses.append(avg_loss)
+                self.step_perplexities.append(perplexity)
+                self.step_times.append(elapsed)
+
+        epoch_time = time.time() - epoch_start
+        epoch_loss = running_loss / len(self.train_loader)
+        epoch_ppl = torch.exp(torch.tensor(epoch_loss)).item()
+
+        timing_stats = {
+            'forward': epoch_forward,
+            'backward': epoch_backward,
+            'sparsification': epoch_sparse,
+            'communication': epoch_comm,
+            'update': epoch_update,
+            'threshold_accuracy': np.mean(epoch_threshold_accs)
+        }
+
+        return epoch_loss, epoch_ppl, epoch_time, timing_stats
+
     def train_epoch(self, epoch):
-        """训练一个epoch"""
+        """训练一个epoch（Vision/LSTM模型）"""
         self.model.train()
         if hasattr(self.train_loader, 'sampler'):
             self.train_loader.sampler.set_epoch(epoch)
