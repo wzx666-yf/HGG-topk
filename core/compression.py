@@ -239,7 +239,9 @@ class HGGTopKCompressor():
     @staticmethod
     def _build_histogram(bin_indices, num_bins):
         """构建直方图和后缀和"""
-        histogram = torch.bincount(bin_indices, minlength=num_bins)
+        # torch.bincount 仅接受 1D 非负整数输入，确保展平且类型正确
+        flat_indices = bin_indices.reshape(-1).long()
+        histogram = torch.bincount(flat_indices, minlength=num_bins)
         suffix_sum = torch.flip(torch.cumsum(torch.flip(histogram, [0]), dim=0), [0])
         return histogram, suffix_sum
 
