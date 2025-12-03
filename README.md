@@ -91,19 +91,33 @@ python trainers/trainer.py --model gpt2-medium --dataset wikitext2 \
 
 ```
 HGG-TopK-Training/
-├── core/                    # 核心算法
-│   ├── compression.py       # 压缩算法（已优化）
-│   ├── hgg_pipeline.py      # 异步流水线
-│   └── models.py            # 模型定义
+├── core/                              # 核心算法
+│   ├── compression.py                 # 压缩算法（已优化）
+│   ├── hgg_pipeline.py                # 异步流水线
+│   └── models.py                      # 模型定义（含GPT-2）
 ├── trainers/
-│   └── trainer.py           # 统一训练器（已优化）
+│   └── trainer.py                     # 统一训练器（已优化）
+├── data_utils/
+│   └── gpt2_data.py                   # GPT-2数据加载
 ├── visualization/
-│   └── visualizer.py        # 性能分析和可视化
-├── experiments/
-│   ├── quick_test.py        # 快速测试
-│   └── compare_all_methods.py  # 对比实验
-├── run.py                   # 一键运行脚本
-└── README.md                # 本文档
+│   └── visualizer.py                  # 性能分析和可视化
+├── experiments/                       # 实验套件
+│   ├── run_experiments.py             # 实验菜单（一键运行）
+│   ├── exp1_algorithm_comparison.py   # 实验1: 算法时间对比
+│   ├── visualize_exp1.py              # 实验1可视化
+│   ├── exp2_galloping_vs_binary.py    # 实验2: 历史阈值对比
+│   ├── visualize_exp2.py              # 实验2可视化
+│   ├── exp3_accuracy_loss_curves.py   # 实验3: 精度损失曲线
+│   ├── visualize_exp3.py              # 实验3可视化
+│   ├── exp4_pipeline_comparison.py    # 实验4: 流水线对比
+│   ├── visualize_exp4.py              # 实验4可视化
+│   ├── exp5_bucket_optimization.py    # 实验5: 最优分桶数
+│   ├── visualize_exp5.py              # 实验5可视化
+│   ├── exp6_communication_efficiency.py # 实验6: 通信效率
+│   └── visualize_exp6.py              # 实验6可视化
+├── run.py                             # 快速运行脚本
+├── test_gpt2.py                       # GPT-2测试脚本
+└── README.md                          # 本文档
 ```
 
 ## ⚙️ 主要参数
@@ -213,9 +227,73 @@ A: 运行 `python experiments/compare_all_methods.py` 对比TopK和HGG-TopK
 **Q: 流水线如何使用?**
 A: 仅HGG-TopK支持，添加 `--use-pipeline` 参数
 
-## 📊 实验示例
+## 📊 实验套件
 
-### 快速对比实验
+提供6个完整的实验，涵盖算法对比、性能分析、参数优化等科研场景：
+
+### 一键运行所有实验
+```bash
+# 交互式菜单选择实验
+python experiments/run_experiments.py
+
+# 或直接运行单个实验
+python experiments/exp1_algorithm_comparison.py
+python experiments/visualize_exp1.py --log-dir ./logs/exp1_algorithm_comparison
+```
+
+### 实验列表
+
+#### 实验1: 算法时间对比
+对比不压缩和各压缩算法的计算时间、通信时间、稀疏开销
+- **模型**: ResNet50, VGG16, LSTM, GPT2-Medium
+- **输出**: 堆叠柱形图、开销对比图
+```bash
+python experiments/exp1_algorithm_comparison.py
+python experiments/visualize_exp1.py
+```
+
+#### 实验2: HGG-TopK历史阈值 vs 全局二分搜索
+对比使用历史阈值(Galloping)和每轮全局搜索的性能差异
+- **输出**: 稀疏化时间对比、总时间对比、开销对比
+```bash
+python experiments/exp2_galloping_vs_binary.py
+python experiments/visualize_exp2.py
+```
+
+#### 实验3: 精度和损失曲线
+绘制所有模型在不同压缩算法下的精度和损失曲线
+- **输出**: 每个模型一张精度图和一张损失图
+```bash
+python experiments/exp3_accuracy_loss_curves.py
+python experiments/visualize_exp3.py
+```
+
+#### 实验4: HGG-TopK流水线对比
+对比使用流水线掩盖压缩时间和不使用流水线的差异
+- **输出**: 时间分解对比、加速比分析
+```bash
+python experiments/exp4_pipeline_comparison.py
+python experiments/visualize_exp4.py
+```
+
+#### 实验5: 最优分桶数分析
+对比不同NUM_BINS值对稀疏化时间、精度和压缩质量的影响
+- **输出**: 性能曲线、压缩质量分析、最优值推荐
+```bash
+python experiments/exp5_bucket_optimization.py
+python experiments/visualize_exp5.py
+```
+
+#### 实验6: 通信效率分析
+对比不同压缩率下的通信量节省和精度权衡
+- **压缩率**: 1%, 5%, 10%, 20%, 50%, 100%
+- **输出**: 权衡分析图、通信节省图、配置推荐
+```bash
+python experiments/exp6_communication_efficiency.py
+python experiments/visualize_exp6.py
+```
+
+### 快速测试
 ```bash
 # 5 epochs快速测试
 python run.py --quick-test
@@ -224,7 +302,7 @@ python run.py --quick-test
 python visualization/visualizer.py --summary
 ```
 
-### GPT-2实验（新增）
+### GPT-2实验
 ```bash
 # 测试GPT-2 + 不同压缩方法
 python test_gpt2.py
@@ -232,15 +310,6 @@ python test_gpt2.py
 # 单独运行GPT-2实验
 python trainers/trainer.py --model gpt2-small --dataset wikitext2 \
     --compressor hggtopk --density 0.05 --batch-size 4 --epochs 3 --log-interval 50
-```
-
-### 完整性能对比
-```bash
-# 运行所有方法（Baseline, TopK, Gaussian, RedSync, HGG-TopK）
-python experiments/compare_all_methods.py
-
-# 生成对比报告和图表
-python visualization/visualizer.py --compare-all --plot
 ```
 
 ## 📝 引用
