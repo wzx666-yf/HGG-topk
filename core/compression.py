@@ -399,7 +399,8 @@ class HGGTopKCompressor():
 
             # 选择梯度
             mask = abs_values >= final_threshold
-            indexes = mask.nonzero().squeeze().view(-1)
+            # nonzero 输出可能是非连续内存，使用 reshape 保证展平
+            indexes = mask.nonzero(as_tuple=False).reshape(-1)
 
             if indexes.numel() > k:
                 selected_abs_values = abs_values[indexes]
