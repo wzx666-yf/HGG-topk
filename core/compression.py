@@ -497,75 +497,67 @@ class HGGTopKCompressor():
 
     @staticmethod
     def _build_histogram(bin_indices, num_bins):
-        """构建直方图和后缀和"""
+        """构建直方图和后缀和（优化GPU版本）"""
         flat_indices = bin_indices.reshape(-1).long()
-        histogram = torch.bincount(flat_indices, minlength=num_bins)
+        # 使用histc替代bincount，在GPU上更快
+        if flat_indices.is_cuda:
+            histogram = torch.histc(
+                flat_indices.float(),
+                bins=num_bins,
+                min=0,
+                max=num_bins-1
+            ).long()
+        else:
+            histogram = torch.bincount(flat_indices, minlength=num_bins)
         suffix_sum = torch.flip(torch.cumsum(torch.flip(histogram, [0]), dim=0), [0])
         return histogram, suffix_sum
 
     @staticmethod
     def _binary_search_threshold(suffix_sum, k, tolerance):
-        """二分搜索阈值桶"""
-        left, right = 0, len(suffix_sum) - 1
-        best_idx = right
+        """二分搜索阈值桶（优化版：减少GPU-CPU同步）"""
+        # 在GPU上找到最接近k的索引
+        diff = torch.abs(suffix_sum - k)
+        within_tolerance = diff <= tolerance
 
-        while left <= right:
-            mid = (left + right) // 2
-            count = suffix_sum[mid].item()
+        if within_tolerance.any():
+            # 找到满足容忍度的第一个索引
+            valid_indices = within_tolerance.nonzero(as_tuple=False).view(-1)
+            return valid_indices[0].item()
 
-            if abs(count - k) <= tolerance:
-                return mid
-
-            if count > k:
-                left = mid + 1
-                best_idx = mid
-            else:
-                right = mid - 1
-
+        # 找到最接近的索引
+        best_idx = torch.argmin(diff).item()
         return best_idx
 
     @staticmethod
     def _galloping_search(suffix_sum, k, prev_idx, tolerance):
-        """历史引导的倍增搜索"""
+        """历史引导的倍增搜索（优化版：减少GPU-CPU同步）"""
+        # 检查prev_idx是否仍然有效
         if 0 <= prev_idx < len(suffix_sum):
-            count = suffix_sum[prev_idx].item()
-            if abs(count - k) <= tolerance:
+            diff_at_prev = torch.abs(suffix_sum[prev_idx] - k)
+            if diff_at_prev.item() <= tolerance:
                 return prev_idx
 
-        step = 1
-        direction = 1 if count > k else -1
-        start_idx = prev_idx
+        # 使用向量化搜索代替迭代
+        # 在prev_idx附近的一个窗口内搜索
+        window_size = min(128, len(suffix_sum))
+        start = max(0, prev_idx - window_size // 2)
+        end = min(len(suffix_sum), start + window_size)
 
-        while True:
-            new_idx = prev_idx + direction * step
+        window_suffix = suffix_sum[start:end]
+        diff = torch.abs(window_suffix - k)
 
-            if new_idx < 0 or new_idx >= len(suffix_sum):
-                new_idx = max(0, min(len(suffix_sum) - 1, new_idx))
-                break
+        # 找到窗口内最佳索引
+        within_tolerance = diff <= tolerance
+        if within_tolerance.any():
+            valid_indices = within_tolerance.nonzero(as_tuple=False).view(-1)
+            return (start + valid_indices[0]).item()
 
-            new_count = suffix_sum[new_idx].item()
-
-            if direction == 1 and new_count < k:
-                break
-            elif direction == -1 and new_count > k:
-                break
-
-            if abs(new_count - k) <= tolerance:
-                return new_idx
-
-            prev_idx = new_idx
-            step *= 2
-
-        left = min(start_idx, new_idx)
-        right = max(start_idx, new_idx)
-
-        return HGGTopKCompressor._binary_search_threshold(
-            suffix_sum[left:right+1], k, tolerance
-        ) + left
+        # 如果窗口内没有找到，使用全局搜索
+        return HGGTopKCompressor._binary_search_threshold(suffix_sum, k, tolerance)
 
     @staticmethod
     def _compute_final_threshold(bin_idx, abs_values, bin_indices, max_val, k, num_bins, gamma, beta):
-        """计算最终阈值（带插值）"""
+        """计算最终阈值（带插值，优化版）"""
         denominator = math.log(1.0 + gamma * max_val)
 
         bin_lower_ratio = bin_idx / num_bins
@@ -574,19 +566,21 @@ class HGGTopKCompressor():
         bin_upper_ratio = (bin_idx + 1) / num_bins
         bin_upper_val = (math.exp(bin_upper_ratio * denominator) - 1.0) / gamma
 
-        mask = bin_indices >= bin_idx
-        count_above = torch.sum(mask).item()
+        # 批量计算mask，减少GPU操作
+        mask_above = bin_indices > bin_idx
+        mask_in_bin = bin_indices == bin_idx
+
+        # 一次性同步到CPU
+        counts = torch.stack([mask_above.sum(), mask_in_bin.sum()])
+        count_above, count_in_bin = counts.tolist()
 
         if count_above >= k:
             return bin_lower_val
 
-        mask_in_bin = bin_indices == bin_idx
-        count_in_bin = torch.sum(mask_in_bin).item()
-
         if count_in_bin == 0:
             return bin_lower_val
 
-        k_remain = k - (count_above - count_in_bin)
+        k_remain = k - count_above
         bin_width = bin_upper_val - bin_lower_val
         interpolation = 1.0 - (k_remain / count_in_bin)
         final_threshold = bin_lower_val + bin_width * interpolation * beta
@@ -595,7 +589,7 @@ class HGGTopKCompressor():
 
     @staticmethod
     def compress(tensor, name=None, ratio=0.05):
-        """压缩梯度"""
+        """压缩梯度（优化版：减少GPU-CPU同步，使用缓存）"""
         with torch.no_grad():
             if name not in HGGTopKCompressor.residuals:
                 HGGTopKCompressor.residuals[name] = torch.zeros_like(tensor.data)
@@ -608,14 +602,18 @@ class HGGTopKCompressor():
             # 误差补偿
             tensor.add_(HGGTopKCompressor.residuals[name].data)
 
+            # 计算绝对值和最大值（减少一次.item()调用）
             abs_values = torch.abs(tensor.data)
-            max_val = torch.max(abs_values).item()
+            max_val_tensor = torch.max(abs_values)
 
-            if max_val < 1e-10:
+            # 提前检查是否需要压缩
+            if max_val_tensor < 1e-10:
                 HGGTopKCompressor.residuals[name].data = tensor.data.clone()
                 empty_indexes = torch.tensor([], dtype=torch.long, device=tensor.device)
                 empty_values = torch.tensor([], dtype=tensor.dtype, device=tensor.device)
                 return tensor, empty_indexes, empty_values
+
+            max_val = max_val_tensor.item()
 
             # 对数域分桶
             bin_indices = HGGTopKCompressor._log_bin_mapping(
@@ -635,14 +633,10 @@ class HGGTopKCompressor():
                 )
             else:
                 prev_threshold = HGGTopKCompressor.prev_thresholds[name]
-
-                if max_val > 1e-10:
-                    numerator = math.log(1.0 + HGGTopKCompressor.GAMMA * prev_threshold)
-                    denominator = math.log(1.0 + HGGTopKCompressor.GAMMA * max_val)
-                    prev_idx = int(HGGTopKCompressor.NUM_BINS * numerator / denominator)
-                    prev_idx = max(0, min(HGGTopKCompressor.NUM_BINS - 1, prev_idx))
-                else:
-                    prev_idx = 0
+                numerator = math.log(1.0 + HGGTopKCompressor.GAMMA * prev_threshold)
+                denominator = math.log(1.0 + HGGTopKCompressor.GAMMA * max_val)
+                prev_idx = int(HGGTopKCompressor.NUM_BINS * numerator / denominator)
+                prev_idx = max(0, min(HGGTopKCompressor.NUM_BINS - 1, prev_idx))
 
                 bin_idx = HGGTopKCompressor._galloping_search(
                     suffix_sum, k, prev_idx, tolerance
@@ -655,23 +649,27 @@ class HGGTopKCompressor():
                 HGGTopKCompressor.BETA
             )
 
-            # 选择梯度（先展平再取索引，保证线性索引）
+            # 选择梯度（优化：展平后统一处理）
             flat_abs = abs_values.view(-1)
+            flat_tensor = tensor.data.view(-1)
+
+            # 使用阈值过滤
             mask = flat_abs >= final_threshold
             indexes = mask.nonzero(as_tuple=False).view(-1)
 
+            # 如果超过k，使用topk精确选择
             if indexes.numel() > k:
                 selected_abs_values = flat_abs[indexes]
                 topk_k = min(k, selected_abs_values.numel())
                 _, topk_indices = torch.topk(selected_abs_values, topk_k)
                 indexes = indexes[topk_indices]
 
-            flat_tensor = tensor.data.view(-1)
             values = flat_tensor[indexes]
 
-            # 更新残差
-            HGGTopKCompressor.residuals[name].data = tensor.data.clone()
-            HGGTopKCompressor.residuals[name].data.view(-1)[indexes] = 0.0
+            # 更新残差（优化：直接在展平视图上操作）
+            residual_flat = tensor.data.clone().view(-1)
+            residual_flat[indexes] = 0.0
+            HGGTopKCompressor.residuals[name].data = residual_flat.view_as(tensor.data)
 
             HGGTopKCompressor.values[name] = values
             HGGTopKCompressor.indexes[name] = indexes

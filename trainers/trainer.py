@@ -53,7 +53,7 @@ class Trainer:
         self.log_dir = kwargs.get('log_dir', './logs')
 
         # 判断模型类型
-        self.is_vision = self.model_name in ['resnet18', 'resnet50', 'vgg11', 'vgg16']
+        self.is_vision = self.model_name in ['resnet18', 'resnet50', 'vgg11', 'vgg16', 'mobilenet']
         self.is_lstm = self.model_name == 'lstm'
 
         # 设置设备
@@ -72,6 +72,7 @@ class Trainer:
         self.backward_times = []
         self.sparsification_times = []
         self.communication_times = []
+        self.update_times = []
         self.threshold_accuracies = []
 
         # 构建模型和数据
@@ -119,6 +120,10 @@ class Trainer:
                 return models.vgg11(num_classes=num_classes)
             elif self.model_name == 'vgg16':
                 return models.vgg16(num_classes=num_classes)
+            elif self.model_name == 'mobilenet':
+                model = models.mobilenet_v2(weights=None)
+                model.classifier[1] = nn.Linear(model.last_channel, num_classes)
+                return model
         elif self.is_lstm:
             train_data, _, _, word_to_id, _ = ptb_raw_data(self.data_dir, prefix="ptb")
             return LSTMModel(
@@ -263,6 +268,27 @@ class Trainer:
         avg_threshold_acc = np.mean(threshold_errors) if threshold_errors else 0.0
         return sparsification_time, avg_threshold_acc
 
+    def _allreduce_gradients(self):
+        """手动执行梯度AllReduce并记录时间"""
+        start_time = time.time()
+
+        # 同步CUDA操作
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
+        # 手动AllReduce每个梯度
+        for param in self.model.parameters():
+            if param.grad is not None:
+                dist.all_reduce(param.grad.data, op=dist.ReduceOp.SUM)
+                param.grad.data /= self.world_size
+
+        # 同步CUDA操作
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
+        comm_time = time.time() - start_time
+        return comm_time
+
     def train_epoch(self, epoch):
         """训练一个epoch"""
         self.model.train()
@@ -277,6 +303,7 @@ class Trainer:
         epoch_backward = 0.0
         epoch_sparse = 0.0
         epoch_comm = 0.0
+        epoch_update = 0.0
         epoch_threshold_accs = []
 
         epoch_start = time.time()
@@ -299,16 +326,27 @@ class Trainer:
             # Sparsification
             sparse_time, threshold_acc = self._compress_gradients()
 
-            # Communication
-            comm_start = time.time()
-            self.optimizer.step()
-            comm_time = time.time() - comm_start
+            # Communication (AllReduce)
+            if self.compressor or self.pipeline:
+                # 手动AllReduce并记录通信时间
+                comm_time = self._allreduce_gradients()
+                # 参数更新
+                update_start = time.time()
+                self.optimizer.step()
+                update_time = time.time() - update_start
+            else:
+                # DDP自动处理AllReduce（在backward中）
+                comm_time = 0.0
+                update_start = time.time()
+                self.optimizer.step()
+                update_time = time.time() - update_start
 
             # 统计
             epoch_forward += fwd_time
             epoch_backward += bwd_time
             epoch_sparse += sparse_time
             epoch_comm += comm_time
+            epoch_update += update_time
             epoch_threshold_accs.append(threshold_acc)
 
             running_loss += loss.item()
@@ -329,6 +367,7 @@ class Trainer:
             'backward': epoch_backward,
             'sparsification': epoch_sparse,
             'communication': epoch_comm,
+            'update': epoch_update,
             'threshold_accuracy': np.mean(epoch_threshold_accs)
         }
 
@@ -384,6 +423,7 @@ class Trainer:
             self.backward_times.append(timing_stats['backward'])
             self.sparsification_times.append(timing_stats['sparsification'])
             self.communication_times.append(timing_stats['communication'])
+            self.update_times.append(timing_stats['update'])
             self.threshold_accuracies.append(timing_stats['threshold_accuracy'])
 
             if test_acc > best_acc:
@@ -393,10 +433,12 @@ class Trainer:
                 print(f'\nEpoch {epoch}: Loss={train_loss:.3f}, Train Acc={train_acc:.2f}%, '
                       f'Test Acc={test_acc:.2f}% (Best={best_acc:.2f}%)')
                 print(f'  Time: {train_time:.1f}s (Fwd:{timing_stats["forward"]:.1f}s, '
-                      f'Bwd:{timing_stats["backward"]:.1f}s, Sparse:{timing_stats["sparsification"]:.1f}s)')
+                      f'Bwd:{timing_stats["backward"]:.1f}s, Sparse:{timing_stats["sparsification"]:.1f}s, '
+                      f'Comm:{timing_stats["communication"]:.1f}s, Update:{timing_stats["update"]:.1f}s)')
                 if self.compressor or self.pipeline:
                     sparse_overhead = timing_stats["sparsification"] / train_time * 100
-                    print(f'  Sparsification Overhead: {sparse_overhead:.2f}%')
+                    comm_overhead = timing_stats["communication"] / train_time * 100
+                    print(f'  Overhead - Sparse:{sparse_overhead:.2f}%, Comm:{comm_overhead:.2f}%')
                     print(f'  Threshold Accuracy: {timing_stats["threshold_accuracy"]:.4f}')
 
         # 保存结果
@@ -436,8 +478,11 @@ class Trainer:
             'backward_times': self.backward_times,
             'sparsification_times': self.sparsification_times,
             'communication_times': self.communication_times,
+            'update_times': self.update_times,
             'threshold_accuracies': self.threshold_accuracies,
             'avg_sparsification_time': np.mean(self.sparsification_times) if self.sparsification_times else 0.0,
+            'avg_communication_time': np.mean(self.communication_times) if self.communication_times else 0.0,
+            'avg_update_time': np.mean(self.update_times) if self.update_times else 0.0,
             'avg_threshold_accuracy': np.mean(self.threshold_accuracies) if self.threshold_accuracies else 0.0,
         }
 
@@ -499,7 +544,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='HGG-TopK Training')
     parser.add_argument('--model', type=str, default='resnet18',
-                       choices=['resnet18', 'resnet50', 'vgg11', 'vgg16', 'lstm'])
+                       choices=['resnet18', 'resnet50', 'vgg11', 'vgg16', 'mobilenet', 'lstm'])
     parser.add_argument('--dataset', type=str, default='cifar10',
                        choices=['cifar10', 'cifar100', 'ptb'])
     parser.add_argument('--batch-size', type=int, default=128)

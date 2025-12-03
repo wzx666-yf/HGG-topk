@@ -334,6 +334,135 @@ class Visualizer:
         print(f"✓ Saved: {save_path}")
         plt.close()
 
+    def print_summary(self, results=None):
+        """打印所有实验的性能摘要"""
+        if results is None:
+            results = self.load_results()
+
+        print(f"\n{'='*80}")
+        print("Performance Summary")
+        print(f"{'='*80}")
+        print(f"{'Experiment':<40s} {'Best Acc':>10s} {'Sparse Time':>12s} {'Comm Time':>12s}")
+        print(f"{'-'*80}")
+
+        for result in sorted(results, key=lambda x: x.get('best_acc', 0), reverse=True):
+            compressor = result.get('compressor') or 'baseline'
+            use_pipeline = result.get('use_pipeline', False)
+            label = NAMES.get(compressor, compressor)
+            if use_pipeline:
+                label += ' (Pipeline)'
+
+            best_acc = result.get('best_acc', 0)
+            sparse_time = result.get('avg_sparsification_time', 0)
+            comm_time = result.get('avg_communication_time', 0)
+
+            print(f"{label:<40s} {best_acc:>9.2f}% {sparse_time:>11.2f}s {comm_time:>11.2f}s")
+
+        print(f"{'='*80}\n")
+
+    def compare_communication_time(self, results=None):
+        """对比通信时间"""
+        if results is None:
+            results = self.load_results()
+
+        print(f"\n{'='*80}")
+        print("Communication Time Comparison")
+        print(f"{'='*80}")
+        print(f"{'Method':<40s} {'Comm Time':>12s} {'Overhead':>10s}")
+        print(f"{'-'*80}")
+
+        for result in sorted(results, key=lambda x: x.get('avg_communication_time', 0)):
+            compressor = result.get('compressor') or 'baseline'
+            use_pipeline = result.get('use_pipeline', False)
+            label = NAMES.get(compressor, compressor)
+            if use_pipeline:
+                label += ' (Pipeline)'
+
+            comm_time = result.get('avg_communication_time', 0)
+            total_time = result.get('avg_epoch_time', 1.0)
+            overhead = (comm_time / total_time * 100) if total_time > 0 else 0
+
+            print(f"{label:<40s} {comm_time:>10.2f}s {overhead:>9.1f}%")
+
+        print(f"{'='*80}\n")
+
+    def compare_sparsification_time(self, results=None):
+        """对比稀疏化时间"""
+        if results is None:
+            results = self.load_results()
+
+        print(f"\n{'='*80}")
+        print("Sparsification Time Comparison")
+        print(f"{'='*80}")
+        print(f"{'Method':<40s} {'Sparse Time':>12s} {'Overhead':>10s}")
+        print(f"{'-'*80}")
+
+        for result in sorted(results, key=lambda x: x.get('avg_sparsification_time', 0)):
+            compressor = result.get('compressor') or 'baseline'
+            if not compressor or compressor == 'baseline':
+                continue
+
+            use_pipeline = result.get('use_pipeline', False)
+            label = NAMES.get(compressor, compressor)
+            if use_pipeline:
+                label += ' (Pipeline)'
+
+            sparse_time = result.get('avg_sparsification_time', 0)
+            total_time = result.get('avg_epoch_time', 1.0)
+            overhead = (sparse_time / total_time * 100) if total_time > 0 else 0
+
+            print(f"{label:<40s} {sparse_time:>10.2f}s {overhead:>9.1f}%")
+
+        print(f"{'='*80}\n")
+
+    def generate_report(self, results=None, output_file='performance_report.txt'):
+        """生成详细性能报告"""
+        if results is None:
+            results = self.load_results()
+
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write("="*80 + "\n")
+            f.write("HGG-TopK Training Performance Report\n")
+            f.write("="*80 + "\n\n")
+
+            f.write(f"Total Experiments: {len(results)}\n")
+            f.write(f"Report Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+
+            # 详细信息
+            for result in results:
+                compressor = result.get('compressor') or 'baseline'
+                use_pipeline = result.get('use_pipeline', False)
+                label = NAMES.get(compressor, compressor)
+                if use_pipeline:
+                    label += ' (Pipeline)'
+
+                f.write(f"\n{'-'*80}\n")
+                f.write(f"Experiment: {label}\n")
+                f.write(f"{'-'*80}\n")
+                f.write(f"Model: {result.get('model', 'N/A')}\n")
+                f.write(f"Dataset: {result.get('dataset', 'N/A')}\n")
+                f.write(f"Compressor: {compressor}\n")
+                f.write(f"Density: {result.get('density', 1.0):.3f}\n\n")
+
+                f.write(f"Accuracy:\n")
+                f.write(f"  Best: {result.get('best_acc', 0):.2f}%\n")
+                f.write(f"  Final: {result.get('final_acc', 0):.2f}%\n\n")
+
+                f.write(f"Time Breakdown (per epoch):\n")
+                f.write(f"  Forward:        {result.get('avg_epoch_time', 0):.2f}s\n")
+                f.write(f"  Sparsification: {result.get('avg_sparsification_time', 0):.2f}s\n")
+                f.write(f"  Communication:  {result.get('avg_communication_time', 0):.2f}s\n")
+                f.write(f"  Update:         {result.get('avg_update_time', 0):.2f}s\n\n")
+
+                if compressor and compressor != 'baseline':
+                    f.write(f"Compression Statistics:\n")
+                    comp_ratios = result.get('compression_ratios', [])
+                    if comp_ratios:
+                        f.write(f"  Avg Compression Ratio: {np.mean(comp_ratios):.4f}\n")
+                    f.write(f"  Avg Threshold Accuracy: {result.get('avg_threshold_accuracy', 0):.4f}\n\n")
+
+        print(f"✓ Report saved: {output_file}\n")
+
     def generate_all(self):
         """生成所有图表"""
         print("\n" + "="*60)
@@ -362,13 +491,37 @@ class Visualizer:
 if __name__ == '__main__':
     import argparse
 
-    parser = argparse.ArgumentParser(description='Visualize Results (PNG Format)')
+    parser = argparse.ArgumentParser(description='Visualize and Analyze Results')
     parser.add_argument('--log-dir', type=str, default='./logs',
                        help='Directory containing JSON result files')
     parser.add_argument('--output-dir', type=str, default='./figures',
                        help='Directory to save PNG figures')
+    parser.add_argument('--summary', action='store_true',
+                       help='Print performance summary')
+    parser.add_argument('--compare-comm', action='store_true',
+                       help='Compare communication time')
+    parser.add_argument('--compare-sparse', action='store_true',
+                       help='Compare sparsification time')
+    parser.add_argument('--report', action='store_true',
+                       help='Generate detailed report')
+    parser.add_argument('--plot', action='store_true',
+                       help='Generate all plots')
 
     args = parser.parse_args()
 
     viz = Visualizer(log_dir=args.log_dir, output_dir=args.output_dir)
-    viz.generate_all()
+
+    # 如果没有指定任何选项，默认生成所有图表
+    if not any([args.summary, args.compare_comm, args.compare_sparse, args.report, args.plot]):
+        viz.generate_all()
+    else:
+        if args.summary:
+            viz.print_summary()
+        if args.compare_comm:
+            viz.compare_communication_time()
+        if args.compare_sparse:
+            viz.compare_sparsification_time()
+        if args.report:
+            viz.generate_report()
+        if args.plot:
+            viz.generate_all()
