@@ -147,19 +147,40 @@ class Trainer:
             transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
         ])
 
+        # 只在 rank 0 进程中下载数据集，避免多进程竞争
+        if self.rank == 0:
+            if self.dataset == 'cifar10':
+                torchvision.datasets.CIFAR10(
+                    root=self.data_dir, train=True, download=True, transform=transform_train
+                )
+                torchvision.datasets.CIFAR10(
+                    root=self.data_dir, train=False, download=True, transform=transform_test
+                )
+            else:
+                torchvision.datasets.CIFAR100(
+                    root=self.data_dir, train=True, download=True, transform=transform_train
+                )
+                torchvision.datasets.CIFAR100(
+                    root=self.data_dir, train=False, download=True, transform=transform_test
+                )
+        
+        # 等待 rank 0 完成下载
+        dist.barrier()
+
+        # 所有进程加载数据集（不下载）
         if self.dataset == 'cifar10':
             train_dataset = torchvision.datasets.CIFAR10(
-                root=self.data_dir, train=True, download=True, transform=transform_train
+                root=self.data_dir, train=True, download=False, transform=transform_train
             )
             test_dataset = torchvision.datasets.CIFAR10(
-                root=self.data_dir, train=False, download=True, transform=transform_test
+                root=self.data_dir, train=False, download=False, transform=transform_test
             )
         else:
             train_dataset = torchvision.datasets.CIFAR100(
-                root=self.data_dir, train=True, download=True, transform=transform_train
+                root=self.data_dir, train=True, download=False, transform=transform_train
             )
             test_dataset = torchvision.datasets.CIFAR100(
-                root=self.data_dir, train=False, download=True, transform=transform_test
+                root=self.data_dir, train=False, download=False, transform=transform_test
             )
 
         train_sampler = DistributedSampler(train_dataset, num_replicas=self.world_size, rank=self.rank)
