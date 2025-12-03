@@ -27,6 +27,7 @@ import time
 import json
 import numpy as np
 from typing import Dict, Tuple
+from datetime import timedelta
 
 from core.compression import compressors
 from core.hgg_pipeline import HGGPipelineCompressor
@@ -76,7 +77,9 @@ class Trainer:
         # 构建模型和数据
         self.model = self._build_model().to(self.device)
         if not self.is_lstm:
-            self.model = DDP(self.model, device_ids=[rank])
+            # 设置 find_unused_parameters=False 以提高性能并避免超时
+            # 如果使用梯度压缩，所有参数都会被使用
+            self.model = DDP(self.model, device_ids=[rank], find_unused_parameters=False)
 
         self.train_loader, self.test_loader = self._build_dataloaders()
 
@@ -449,7 +452,19 @@ def setup_distributed(rank, world_size):
     """初始化分布式"""
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = '12355'
-    dist.init_process_group(backend='nccl', init_method='env://', world_size=world_size, rank=rank)
+    # 设置 NCCL 超时时间（默认 30 分钟，增加到 2 小时）
+    os.environ['NCCL_TIMEOUT'] = '7200'
+    # 设置 NCCL 调试信息（可选，用于调试）
+    # os.environ['NCCL_DEBUG'] = 'INFO'
+    # 设置超时时间为 2 小时（7200 秒）
+    timeout = timedelta(seconds=7200)
+    dist.init_process_group(
+        backend='nccl', 
+        init_method='env://', 
+        world_size=world_size, 
+        rank=rank,
+        timeout=timeout
+    )
 
 
 def cleanup():
