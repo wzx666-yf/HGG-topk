@@ -13,7 +13,7 @@ import torch
 import torch.cuda as cuda
 import numpy as np
 import time
-from compression import HGGTopKCompressor
+from .compression import HGGTopKCompressor
 
 
 class AsyncCompressionTask:
