@@ -397,21 +397,23 @@ class HGGTopKCompressor():
                 HGGTopKCompressor.BETA
             )
 
-            # 选择梯度
-            mask = abs_values >= final_threshold
-            # nonzero 输出可能是非连续内存，使用 reshape 保证展平
-            indexes = mask.nonzero(as_tuple=False).reshape(-1)
+            # 选择梯度（先展平再取索引，保证线性索引）
+            flat_abs = abs_values.view(-1)
+            mask = flat_abs >= final_threshold
+            indexes = mask.nonzero(as_tuple=False).view(-1)
 
             if indexes.numel() > k:
-                selected_abs_values = abs_values[indexes]
-                _, topk_indices = torch.topk(selected_abs_values, k)
+                selected_abs_values = flat_abs[indexes]
+                topk_k = min(k, selected_abs_values.numel())
+                _, topk_indices = torch.topk(selected_abs_values, topk_k)
                 indexes = indexes[topk_indices]
 
-            values = tensor.data[indexes]
+            flat_tensor = tensor.data.view(-1)
+            values = flat_tensor[indexes]
 
             # 更新残差
             HGGTopKCompressor.residuals[name].data = tensor.data.clone()
-            HGGTopKCompressor.residuals[name].data[indexes] = 0.0
+            HGGTopKCompressor.residuals[name].data.view(-1)[indexes] = 0.0
 
             HGGTopKCompressor.values[name] = values
             HGGTopKCompressor.indexes[name] = indexes
