@@ -436,7 +436,7 @@ def cleanup():
     dist.destroy_process_group()
 
 
-def train_worker(rank, world_size, **kwargs):
+def train_worker(rank, world_size, kwargs):
     """训练进程"""
     setup_distributed(rank, world_size)
     trainer = Trainer(rank, world_size, **kwargs)
@@ -455,7 +455,7 @@ def main(**kwargs):
         raise RuntimeError("No GPU available!")
 
     print(f"Using {gpus} GPUs")
-    mp.spawn(train_worker, args=(gpus,), kwargs=kwargs, nprocs=gpus, join=True)
+    mp.spawn(train_worker, args=(gpus, kwargs), nprocs=gpus, join=True)
 
 
 if __name__ == '__main__':
