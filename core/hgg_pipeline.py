@@ -194,16 +194,20 @@ class HGGPipelineCompressor:
             # 阶段4: 压缩内核 (GPU, 访存密集)
             mask_start = time.time()
 
-            mask = abs_values >= final_threshold
-            indexes = mask.nonzero().squeeze().view(-1)
+            # 展平处理多维张量
+            flat_abs = abs_values.view(-1)
+            mask = flat_abs >= final_threshold
+            indexes = mask.nonzero(as_tuple=False).view(-1)
 
             # 确保不超过k
             if indexes.numel() > k:
-                selected_abs_values = abs_values[indexes]
-                _, topk_indices = torch.topk(selected_abs_values, k)
+                selected_abs_values = flat_abs[indexes]
+                topk_k = min(k, selected_abs_values.numel())
+                _, topk_indices = torch.topk(selected_abs_values, topk_k)
                 indexes = indexes[topk_indices]
 
-            values = tensor.data[indexes]
+            flat_tensor = tensor.data.view(-1)
+            values = flat_tensor[indexes]
 
             mask_time = time.time() - mask_start
 
