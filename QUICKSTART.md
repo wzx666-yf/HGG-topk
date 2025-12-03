@@ -87,10 +87,19 @@ python visualization/visualizer.py
 | `--model` | 模型 | resnet18, resnet50, vgg11, vgg16, lstm |
 | `--dataset` | 数据集 | cifar10, cifar100, ptb |
 | `--epochs` | 轮数 | 50, 100 |
-| `--compressor` | 压缩器 | topk, gaussian, redsync, hggtopk |
+| `--compressor` | 压缩器 | **hggtopk** (推荐), topk, gaussian, redsync, dgcsampling, randomk 等 |
 | `--density` | 密度 | 0.05 (推荐), 0.01~1.0 |
-| `--use-pipeline` | 流水线 | 添加此标志 |
+| `--use-pipeline` | 流水线 | 添加此标志（仅hggtopk） |
 | `--batch-size` | 批大小 | 128 (resnet18), 64 (resnet50) |
+
+### 可用压缩器
+
+- `hggtopk` - **HGG-TopK** (O(N)时间，推荐) ⭐
+- `topk` / `topk2` - 标准 TopK
+- `gaussian` / `gaussian2` - 高斯分布压缩
+- `redsync` - RedSync 自适应阈值
+- `dgcsampling` - DGC 采样压缩
+- `randomk` / `randomkec` - 随机K选择
 
 ---
 

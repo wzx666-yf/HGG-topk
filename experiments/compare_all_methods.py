@@ -7,8 +7,11 @@
 1. Baseline (无压缩)
 2. TopK
 3. Gaussian
-4. RedSync
-5. HGG-TopK
+4. DGC-Sampling
+5. RedSync
+6. HGG-TopK
+
+可选：添加 --extended 运行扩展对比（包含 topk2, gaussian2, randomk 等）
 """
 
 import sys
@@ -35,6 +38,7 @@ def main_comparison():
         {'name': 'Baseline', 'compressor': None},
         {'name': 'TopK', 'compressor': 'topk'},
         {'name': 'Gaussian', 'compressor': 'gaussian'},
+        {'name': 'DGC-Sampling', 'compressor': 'dgcsampling'},
         {'name': 'RedSync', 'compressor': 'redsync'},
         {'name': 'HGG-TopK', 'compressor': 'hggtopk'},
     ]

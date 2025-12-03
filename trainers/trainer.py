@@ -506,7 +506,8 @@ if __name__ == '__main__':
     parser.add_argument('--lr', type=float, default=0.1)
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--compressor', type=str, default=None,
-                       choices=['topk', 'gaussian', 'redsync', 'hggtopk'])
+                       choices=['topk', 'topk2', 'gaussian', 'gaussian2', 'randomk', 'randomkec',
+                               'dgcsampling', 'redsync', 'hggtopk'])
     parser.add_argument('--density', type=float, default=1.0)
     parser.add_argument('--use-pipeline', action='store_true')
     parser.add_argument('--gpus', type=int, default=None)

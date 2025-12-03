@@ -17,7 +17,7 @@ def print_menu():
     print("="*60)
     print("\n选择实验:")
     print("  [1] 快速测试 (10 epochs, 3个实验, ~30分钟)")
-    print("  [2] 对比所有压缩方法 (50 epochs, 5个实验, ~5小时)")
+    print("  [2] 对比所有压缩方法 (50 epochs, 6个实验, ~6小时)")
     print("  [3] 流水线对比实验 (50 epochs, 4个实验, ~6小时)")
     print("  [4] 单次训练 (自定义参数)")
     print("  [5] 生成可视化图表")
@@ -51,11 +51,12 @@ def single_train():
     """单次训练"""
     print("\n自定义训练参数:")
     print("示例: python trainers/trainer.py --model resnet18 --dataset cifar10 --epochs 50 --compressor hggtopk --density 0.05\n")
+    print("可用压缩器: topk, gaussian, dgcsampling, redsync, hggtopk (推荐), randomk\n")
 
     model = input("Model (resnet18/resnet50/vgg11/vgg16) [resnet18]: ").strip() or 'resnet18'
     dataset = input("Dataset (cifar10/cifar100) [cifar10]: ").strip() or 'cifar10'
     epochs = input("Epochs [100]: ").strip() or '100'
-    compressor = input("Compressor (none/topk/gaussian/redsync/hggtopk) [hggtopk]: ").strip() or 'hggtopk'
+    compressor = input("Compressor (none/topk/gaussian/dgcsampling/redsync/hggtopk) [hggtopk]: ").strip() or 'hggtopk'
     density = input("Density (0.01-1.0) [0.05]: ").strip() or '0.05'
     use_pipeline = input("Use pipeline? (y/n) [n]: ").strip().lower() == 'y'
 

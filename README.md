@@ -137,10 +137,24 @@ python trainers/trainer.py \
 | `--model` | 模型架构 | resnet18 | resnet18/50, vgg11/16, lstm |
 | `--dataset` | 数据集 | cifar10 | cifar10, cifar100, ptb |
 | `--epochs` | 训练轮数 | 100 | 任意正整数 |
-| `--compressor` | 压缩器 | None | topk, gaussian, redsync, hggtopk |
+| `--compressor` | 压缩器 | None | topk, topk2, gaussian, gaussian2, randomk, randomkec, dgcsampling, redsync, hggtopk |
 | `--density` | 梯度密度 | 1.0 | 0.001~1.0 (推荐0.05) |
-| `--use-pipeline` | 使用流水线 | False | 加上此标志启用 |
+| `--use-pipeline` | 使用流水线 | False | 加上此标志启用（仅hggtopk） |
 | `--batch-size` | 批大小 | 128 | 根据显存调整 |
+
+### 可用压缩器说明
+
+| 压缩器 | 说明 | 特点 |
+|--------|------|------|
+| `topk` | 标准 TopK | 带误差补偿 |
+| `topk2` | TopK | 无误差补偿 |
+| `gaussian` | 高斯分布 | 基于标准差阈值 + 误差补偿 |
+| `gaussian2` | 高斯分布 | 基于标准差阈值，无误差补偿 |
+| `randomk` | 随机K | 随机选择k个梯度 |
+| `randomkec` | 随机K | 随机选择 + 误差补偿 |
+| `dgcsampling` | DGC采样 | 基于采样估计阈值 |
+| `redsync` | RedSync | 自适应阈值二分搜索 |
+| `hggtopk` | HGG-TopK | **O(N)时间复杂度** + 历史引导搜索 |
 
 ## 📈 可视化
 

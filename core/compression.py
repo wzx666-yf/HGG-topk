@@ -1,7 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-梯度压缩算法实现
-包含 TopK, Gaussian, HGG-TopK 等多种压缩方法
+梯度压缩算法实现 - 统一版本
+包含 TopK, Gaussian, RedSync, DGC, RandomK, HGG-TopK 等多种压缩方法
+
+特性:
+- 修复多维张量索引问题
+- 统一接口使用 ratio 参数
+- 移除外部依赖 (settings, utils)
+- 包含完整的 HGG-TopK 实现
 """
 from __future__ import print_function
 import torch
@@ -22,7 +28,10 @@ class NoneCompressor():
 
 
 class TopKCompressor():
-    """标准 TopK 压缩"""
+    """
+    标准 TopK 压缩
+    Sparse Communication for Distributed Gradient Descent, Alham Fikri Aji et al., 2017
+    """
     residuals = {}
     values = {}
     indexes = {}
@@ -46,13 +55,14 @@ class TopKCompressor():
             # 添加残差
             tensor.add_(TopKCompressor.residuals[name].data)
 
-            # TopK 选择
-            values, indexes = torch.topk(torch.abs(tensor.data), k=k)
-            values = tensor.data[indexes]
+            # 展平张量进行 TopK 选择
+            tensor_flat = tensor.data.view(-1)
+            values, indexes = torch.topk(torch.abs(tensor_flat), k=k)
+            values = tensor_flat[indexes]
 
             # 更新残差
             TopKCompressor.residuals[name].data = tensor.data.clone()
-            TopKCompressor.residuals[name].data[indexes] = 0.
+            TopKCompressor.residuals[name].data.view(-1)[indexes] = 0.
 
             TopKCompressor.values[name] = values
             TopKCompressor.indexes[name] = indexes
@@ -60,12 +70,54 @@ class TopKCompressor():
             return tensor, indexes, values
 
     @staticmethod
+    def get_residuals(name, like_tensor):
+        if name not in TopKCompressor.residuals:
+            TopKCompressor.residuals[name] = torch.zeros_like(like_tensor.data)
+        return TopKCompressor.residuals[name]
+
+    @staticmethod
+    def add_residuals(included_indexes, name):
+        with torch.no_grad():
+            residuals = TopKCompressor.residuals[name]
+            if type(included_indexes) is np.ndarray:
+                indexes_t = torch.from_numpy(included_indexes).to(device=residuals.device).long()
+            else:
+                indexes_t = included_indexes
+            values = TopKCompressor.values[name]
+            values.data[indexes_t] = 0.0
+            residuals.data.view(-1)[TopKCompressor.indexes[name]] += values.data
+
+    @staticmethod
     def decompress(tensor, ctc, name=None):
         return tensor
 
 
+class TopKCompressor2(TopKCompressor):
+    """TopK 压缩（无残差）"""
+    name = 'topk2'
+
+    @staticmethod
+    def compress(tensor, name=None, ratio=0.05):
+        with torch.no_grad():
+            if name not in TopKCompressor.residuals:
+                TopKCompressor.residuals[name] = torch.zeros_like(tensor.data)
+
+            numel = tensor.numel()
+            k = max(int(numel * ratio), 1)
+
+            tensor_flat = tensor.data.view(-1)
+            values, indexes = torch.topk(torch.abs(tensor_flat), k=k)
+            values = tensor_flat[indexes]
+
+            TopKCompressor.residuals[name].data.view(-1)[indexes] = 0.
+            TopKCompressor.values[name] = values
+            TopKCompressor.indexes[name] = indexes
+
+            return tensor, indexes, values
+
+
 class GaussianCompressor():
-    """高斯压缩"""
+    """高斯分布压缩"""
     residuals = {}
     values = {}
     indexes = {}
@@ -91,27 +143,228 @@ class GaussianCompressor():
             # 使用标准差阈值
             std = torch.std(tensor)
             mean = torch.mean(tensor)
-            threshold = float(std) * 2.5
+            # 根据稀疏度估计阈值倍数
+            sigma_scale = 2.5
 
-            abs_tensor = torch.abs(tensor)
-            mask = abs_tensor > threshold
-            indexes = mask.nonzero().squeeze().view(-1)
+            # 展平张量进行操作
+            tensor_flat = tensor.data.view(-1)
+            abs_tensor_flat = torch.abs(tensor_flat)
+            threshold = float(std) * sigma_scale
 
-            # 调整到接近k
-            if indexes.numel() > k * 1.5:
-                values = abs_tensor[indexes]
-                _, topk_idx = torch.topk(values, k)
-                indexes = indexes[topk_idx]
+            mask = abs_tensor_flat > threshold
+            indexes = mask.nonzero(as_tuple=False).view(-1)
 
-            values = tensor.data[indexes]
+            # 自适应调整阈值
+            loops = 0
+            while loops < 3:
+                if indexes.numel() < 2 * k / 3:
+                    threshold *= 0.5
+                elif indexes.numel() > 4 * k / 3:
+                    threshold *= 1.5
+                else:
+                    break
+                mask = abs_tensor_flat > threshold
+                indexes = mask.nonzero(as_tuple=False).view(-1)
+                loops += 1
+
+            values = tensor_flat[indexes]
 
             GaussianCompressor.residuals[name].data = tensor.data.clone()
-            GaussianCompressor.residuals[name].data[indexes] = 0.0
+            GaussianCompressor.residuals[name].data.view(-1)[indexes] = 0.0
 
             GaussianCompressor.values[name] = values
             GaussianCompressor.indexes[name] = indexes
 
             return tensor, indexes, values
+
+    @staticmethod
+    def add_residuals(included_indexes, name):
+        with torch.no_grad():
+            residuals = GaussianCompressor.residuals[name]
+            indexes_t = torch.from_numpy(included_indexes).to(device=residuals.device).long()
+            values = GaussianCompressor.values[name]
+            values[indexes_t] = 0.0
+            residuals.data.view(-1)[GaussianCompressor.indexes[name]] += values.data
+
+    @staticmethod
+    def decompress(tensor, ctc, name=None):
+        return tensor
+
+
+class GaussianCompressor2(GaussianCompressor):
+    """高斯压缩（无残差）"""
+    name = 'gaussian2'
+
+    @staticmethod
+    def compress(tensor, name=None, ratio=0.05):
+        with torch.no_grad():
+            if name not in GaussianCompressor.residuals:
+                GaussianCompressor.residuals[name] = torch.zeros_like(tensor.data)
+
+            numel = tensor.numel()
+            k = max(int(numel * ratio), 1)
+
+            std = torch.std(tensor)
+            mean = torch.mean(tensor)
+            sigma_scale = 2.5
+
+            tensor_flat = tensor.data.view(-1)
+            abs_tensor_flat = torch.abs(tensor_flat)
+            threshold = float(std) * sigma_scale
+
+            mask = abs_tensor_flat > threshold
+            indexes = mask.nonzero(as_tuple=False).view(-1)
+
+            loops = 0
+            while loops < 5:
+                if indexes.numel() < 2 * k / 3:
+                    threshold *= 0.5
+                elif indexes.numel() > 4 * k / 3:
+                    threshold *= 1.5
+                else:
+                    break
+                mask = abs_tensor_flat > threshold
+                indexes = mask.nonzero(as_tuple=False).view(-1)
+                loops += 1
+
+            values = tensor_flat[indexes]
+            GaussianCompressor.residuals[name].data = tensor.data.clone()
+            GaussianCompressor.residuals[name].data.view(-1)[indexes] = 0.0
+
+            return tensor, indexes, values
+
+
+class RandomKCompressor():
+    """随机K压缩"""
+    residuals = {}
+    values = {}
+    indexes = {}
+    name = 'randomk'
+    counter = 0
+
+    @staticmethod
+    def clear():
+        RandomKCompressor.residuals = {}
+        RandomKCompressor.values = {}
+        RandomKCompressor.indexes = {}
+
+    @staticmethod
+    def compress(tensor, name=None, ratio=0.05):
+        with torch.no_grad():
+            if name not in RandomKCompressor.residuals:
+                RandomKCompressor.residuals[name] = torch.zeros_like(tensor.data)
+            numel = tensor.numel()
+            k = max(int(numel * ratio), 1)
+
+            perm = torch.randperm(numel, device=tensor.device)
+            RandomKCompressor.counter += 1
+            indexes = perm[:k]
+
+            tensor_flat = tensor.data.view(-1)
+            values = tensor_flat[indexes]
+
+            RandomKCompressor.residuals[name].data = tensor.data.clone()
+            RandomKCompressor.residuals[name].data.view(-1)[indexes] = 0.0
+
+            return tensor, indexes, values
+
+    @staticmethod
+    def add_residuals(included_indexes, name):
+        with torch.no_grad():
+            residuals = RandomKCompressor.residuals[name]
+            indexes_t = torch.from_numpy(included_indexes).to(device=residuals.device).long()
+            values = RandomKCompressor.values[name]
+            values[indexes_t] = 0.0
+            residuals.data.view(-1)[RandomKCompressor.indexes[name]] += values.data
+
+    @staticmethod
+    def decompress(tensor, ctc, name=None):
+        return tensor
+
+
+class RandomKECCompressor(RandomKCompressor):
+    """随机K压缩（带误差补偿）"""
+    name = 'randomkec'
+
+    @staticmethod
+    def compress(tensor, name=None, ratio=0.05):
+        with torch.no_grad():
+            if name not in RandomKCompressor.residuals:
+                RandomKCompressor.residuals[name] = torch.zeros_like(tensor.data)
+            numel = tensor.numel()
+            k = max(int(numel * ratio), 1)
+
+            tensor.add_(RandomKCompressor.residuals[name].data)
+            perm = torch.randperm(numel, device=tensor.device)
+            indexes = perm[:k]
+
+            tensor_flat = tensor.data.view(-1)
+            values = tensor_flat[indexes]
+
+            RandomKCompressor.residuals[name].data = tensor.data.clone()
+            RandomKCompressor.residuals[name].data.view(-1)[indexes] = 0.0
+
+            return tensor, indexes, values
+
+
+class DGCSamplingCompressor():
+    """DGC采样压缩"""
+    residuals = {}
+    values = {}
+    indexes = {}
+    name = 'dgcsampling'
+
+    @staticmethod
+    def clear():
+        DGCSamplingCompressor.residuals = {}
+        DGCSamplingCompressor.values = {}
+        DGCSamplingCompressor.indexes = {}
+
+    @staticmethod
+    def compress(tensor, name=None, ratio=0.05):
+        with torch.no_grad():
+            if name not in DGCSamplingCompressor.residuals:
+                DGCSamplingCompressor.residuals[name] = torch.zeros_like(tensor.data)
+            numel = tensor.numel()
+            k = max(int(numel * ratio), 1)
+
+            tensor.add_(DGCSamplingCompressor.residuals[name].data)
+
+            tensor_flat = tensor.data.view(-1)
+            abs_tensor_flat = torch.abs(tensor_flat)
+
+            # 采样估计阈值
+            perm = torch.randperm(numel, device=tensor.device)
+            fk = max(int(numel * 0.01), k)
+            sampled_indexes = perm[0:fk]
+            sampled_values = abs_tensor_flat[sampled_indexes]
+            tmpvalues, tmpindexes = torch.topk(sampled_values, k=min(k, sampled_values.numel()))
+
+            thres = tmpvalues[-1] if tmpvalues.numel() > 0 else 0
+            mask = abs_tensor_flat > thres
+            indexes = mask.nonzero(as_tuple=False).view(-1)
+
+            # 如果选中太多，再做TopK
+            if indexes.numel() > 4 * k / 3:
+                tmpvalues = abs_tensor_flat[indexes]
+                topk_k = min(k, tmpvalues.numel())
+                _, tmpindexes = torch.topk(tmpvalues, k=topk_k)
+                indexes = indexes[tmpindexes]
+
+            values = tensor_flat[indexes]
+            DGCSamplingCompressor.residuals[name].data = tensor.data.clone()
+            DGCSamplingCompressor.residuals[name].data.view(-1)[indexes] = 0.0
+
+            return tensor, indexes, values
+
+    @staticmethod
+    def add_residuals(included_indexes, name):
+        with torch.no_grad():
+            residuals = DGCSamplingCompressor.residuals[name]
+            indexes_t = torch.from_numpy(included_indexes).to(device=residuals.device).long()
+            values = DGCSamplingCompressor.values[name]
+            values[indexes_t] = 0.0
+            residuals.data.view(-1)[DGCSamplingCompressor.indexes[name]] += values.data
 
     @staticmethod
     def decompress(tensor, ctc, name=None):
@@ -121,9 +374,7 @@ class GaussianCompressor():
 class RedSyncCompressor():
     """
     RedSync: Reducing Synchronization Overhead via Adaptive Threshold Selection
-
     使用二分搜索在均值和最大值之间找到合适的阈值
-    目标是选择接近k个梯度，误差控制在[k/2, 2k]
     """
     residuals = {}
     values = {}
@@ -138,7 +389,6 @@ class RedSyncCompressor():
 
     @staticmethod
     def compress(tensor, name=None, ratio=0.05):
-        """使用自适应阈值搜索压缩梯度"""
         with torch.no_grad():
             if name not in RedSyncCompressor.residuals:
                 RedSyncCompressor.residuals[name] = torch.zeros_like(tensor.data)
@@ -149,21 +399,23 @@ class RedSyncCompressor():
             # 添加残差
             tensor.add_(RedSyncCompressor.residuals[name].data)
 
-            abs_tensor = torch.abs(tensor)
-            mean_val = torch.mean(abs_tensor)
-            max_val = torch.max(abs_tensor)
+            # 展平张量
+            tensor_flat = tensor.data.view(-1)
+            abs_tensor_flat = torch.abs(tensor_flat)
+            mean_val = torch.mean(abs_tensor_flat)
+            max_val = torch.max(abs_tensor_flat)
 
             # 二分搜索阈值
             l = 0.0
             r = 1.0
-            eps = 0.2  # 搜索精度
+            eps = 0.2
             thres = 0.0
 
             while r - l > eps:
                 tmp_ratio = l + (r - l) / 2
                 thres = mean_val + tmp_ratio * (max_val - mean_val)
-                mask = abs_tensor > thres
-                indexes = mask.nonzero().squeeze().view(-1)
+                mask = abs_tensor_flat > thres
+                indexes = mask.nonzero(as_tuple=False).view(-1)
                 nnz = indexes.numel()
 
                 # 如果在 [k, 2k] 范围内则接受
@@ -174,18 +426,25 @@ class RedSyncCompressor():
                 else:
                     l = tmp_ratio
 
-            # 最终选择
-            indexes = indexes
-            values = tensor.data[indexes]
+            values = tensor_flat[indexes]
 
             # 更新残差
             RedSyncCompressor.residuals[name].data = tensor.data.clone()
-            RedSyncCompressor.residuals[name].data[indexes] = 0.0
+            RedSyncCompressor.residuals[name].data.view(-1)[indexes] = 0.0
 
             RedSyncCompressor.values[name] = values
             RedSyncCompressor.indexes[name] = indexes
 
             return tensor, indexes, values
+
+    @staticmethod
+    def add_residuals(included_indexes, name):
+        with torch.no_grad():
+            residuals = RedSyncCompressor.residuals[name]
+            indexes_t = torch.from_numpy(included_indexes).to(device=residuals.device).long()
+            values = RedSyncCompressor.values[name]
+            values[indexes_t] = 0.0
+            residuals.data.view(-1)[RedSyncCompressor.indexes[name]] += values.data
 
     @staticmethod
     def decompress(tensor, ctc, name=None):
@@ -213,7 +472,7 @@ class HGGTopKCompressor():
     NUM_BINS = 1024      # 桶数量
     GAMMA = 1000.0       # 对数缩放因子
     TOLERANCE = 0.01     # 搜索容忍度
-    BETA = 0.98         # 保守插值系数
+    BETA = 0.98          # 保守插值系数
 
     @staticmethod
     def clear():
@@ -239,7 +498,6 @@ class HGGTopKCompressor():
     @staticmethod
     def _build_histogram(bin_indices, num_bins):
         """构建直方图和后缀和"""
-        # torch.bincount 仅接受 1D 非负整数输入，确保展平且类型正确
         flat_indices = bin_indices.reshape(-1).long()
         histogram = torch.bincount(flat_indices, minlength=num_bins)
         suffix_sum = torch.flip(torch.cumsum(torch.flip(histogram, [0]), dim=0), [0])
@@ -431,7 +689,12 @@ class HGGTopKCompressor():
 compressors = {
     'none': NoneCompressor,
     'topk': TopKCompressor,
+    'topk2': TopKCompressor2,
     'gaussian': GaussianCompressor,
+    'gaussian2': GaussianCompressor2,
+    'randomk': RandomKCompressor,
+    'randomkec': RandomKECCompressor,
+    'dgcsampling': DGCSamplingCompressor,
     'redsync': RedSyncCompressor,
     'hggtopk': HGGTopKCompressor,
 }
