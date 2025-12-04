@@ -44,7 +44,15 @@ def print_menu():
     print("   - 对比不同压缩率下的通信量节省和精度权衡")
     print("   - 生成权衡分析图和推荐配置")
     print()
-    print("7. 运行所有实验 (需要较长时间)")
+    print("7. 实验7: 不同稀疏率下的压缩算法对比 ⭐NEW")
+    print("   - 系统性对比1%, 2%, 5%, 10%, 20%稀疏率下各算法性能")
+    print("   - 每个稀疏率独立成图，多模型全面对比")
+    print()
+    print("8. 实验8: 不同梯度量下的稀疏化时间对比 ⭐NEW")
+    print("   - 分析梯度量增加时各算法的时间复杂度表现")
+    print("   - 单图展示所有算法的可扩展性")
+    print()
+    print("9. 运行所有实验 (需要较长时间)")
     print()
     print("0. 退出")
     print("-"*80)
@@ -88,6 +96,18 @@ def run_experiment(exp_num):
             'runner': 'experiments/exp6_communication_efficiency.py',
             'visualizer': 'experiments/visualize_exp6.py',
             'log_dir': './logs/exp6_communication_efficiency'
+        },
+        7: {
+            'name': '实验7: 不同稀疏率下的压缩算法对比',
+            'runner': 'experiments/exp7_sparsity_comparison.py',
+            'visualizer': 'experiments/visualize_exp7.py',
+            'log_dir': './logs/exp7_sparsity_comparison'
+        },
+        8: {
+            'name': '实验8: 不同梯度量下的稀疏化时间对比',
+            'runner': 'experiments/exp8_gradient_scaling.py',
+            'visualizer': 'experiments/visualize_exp8.py',
+            'log_dir': './logs/exp8_gradient_scaling'
         }
     }
 
@@ -127,7 +147,7 @@ def run_experiment(exp_num):
 def run_all_experiments():
     """运行所有实验"""
     print("\n" + "="*80)
-    print("将依次运行所有6个实验，这可能需要数小时时间")
+    print("将依次运行所有8个实验，这可能需要10-15小时时间")
     print("="*80)
 
     choice = input("\n确认继续? (y/n): ")
@@ -135,7 +155,7 @@ def run_all_experiments():
         print("已取消")
         return
 
-    for exp_num in range(1, 7):
+    for exp_num in range(1, 9):
         run_experiment(exp_num)
         print("\n" + "-"*80 + "\n")
 
@@ -152,6 +172,12 @@ def show_quick_commands():
     print("\n# 单独运行某个实验:")
     print("python experiments/exp1_algorithm_comparison.py")
     print("python experiments/visualize_exp1.py --log-dir ./logs/exp1_algorithm_comparison")
+    print("\n# 实验7: 不同稀疏率对比")
+    print("python experiments/exp7_sparsity_comparison.py")
+    print("python experiments/visualize_exp7.py --log-dir ./logs/exp7_sparsity_comparison")
+    print("\n# 实验8: 梯度量可扩展性测试")
+    print("python experiments/exp8_gradient_scaling.py")
+    print("python experiments/visualize_exp8.py --log-dir ./logs/exp8_gradient_scaling")
     print("\n# 查看结果摘要:")
     print("python visualization/visualizer.py --summary")
     print("\n# 生成完整报告:")
@@ -166,7 +192,7 @@ def main():
         print_menu()
 
         try:
-            choice = input("\n请选择实验编号 (0-7, 或输入'h'查看快速命令): ")
+            choice = input("\n请选择实验编号 (0-9, 或输入'h'查看快速命令): ")
 
             if choice.lower() == 'h':
                 show_quick_commands()
@@ -177,12 +203,12 @@ def main():
             if choice == 0:
                 print("\n再见!")
                 break
-            elif choice == 7:
+            elif choice == 9:
                 run_all_experiments()
-            elif 1 <= choice <= 6:
+            elif 1 <= choice <= 8:
                 run_experiment(choice)
             else:
-                print("❌ 无效的选择，请输入0-7之间的数字")
+                print("❌ 无效的选择，请输入0-9之间的数字")
 
         except ValueError:
             print("❌ 请输入有效的数字")

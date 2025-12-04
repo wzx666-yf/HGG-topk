@@ -230,6 +230,88 @@ python experiments/visualize_exp6.py
 
 ---
 
+### 实验7: 不同稀疏率下的压缩算法对比
+
+**目的**: 系统性对比不同稀疏率下各压缩算法的性能表现
+
+**实验配置**:
+- **模型**: ResNet18, ResNet50, VGG11, VGG16, LSTM, GPT2-Small
+- **稀疏率**: 1%, 2%, 5%, 10%, 20%
+- **压缩算法**: TopK, Gaussian, RedSync, HGG-TopK
+- **训练轮数**:
+  - ResNet/VGG: 20 epochs
+  - LSTM: 15 epochs
+  - GPT2-Small: 5 epochs
+
+**测量指标**:
+- 总训练时间
+- 稀疏化时间
+- 通信时间
+- 测试精度
+- 稀疏化开销百分比
+
+**输出文件**:
+- `exp7_sparsity_{density}percent.png` - 每个稀疏率单独的对比图（含4个子图）
+- `exp7_summary_heatmap.png` - 所有配置的精度热力图
+- `exp7_efficiency_tradeoff.png` - 效率-精度权衡分析
+
+**运行时间**: ~4-8小时（取决于GPU和模型数量）
+
+**命令**:
+```bash
+python experiments/exp7_sparsity_comparison.py
+python experiments/visualize_exp7.py
+```
+
+**科研意义**:
+- 展示不同稀疏率下算法性能的系统性对比
+- 为不同模型和应用场景提供稀疏率选择指导
+- 揭示压缩算法在不同稀疏度下的特性差异
+- 每个稀疏率独立成图，适合论文多维度分析
+
+---
+
+### 实验8: 不同梯度量下的稀疏化时间对比
+
+**目的**: 分析梯度量增加时各压缩算法的时间复杂度表现
+
+**实验配置**:
+- **梯度量**: 10K, 50K, 100K, 500K, 1M, 5M, 10M, 20M, 50M 元素
+- **压缩算法**: TopK, Gaussian, RedSync, HGG-TopK
+- **稀疏率**: 5%
+- **测试方式**:
+  - 预热5次
+  - 正式测试20次取平均
+  - GPU同步确保精确计时
+
+**测量指标**:
+- 稀疏化时间（毫秒）
+- 时间标准差
+- 相对于TopK的加速比
+- 时间复杂度增长率
+
+**输出文件**:
+- `exp8_scaling_performance.png` - 主图：所有算法的时间-梯度量曲线（对数坐标）
+- `exp8_speedup_comparison.png` - 加速比对比图
+- `exp8_complexity_analysis.png` - 复杂度分析图（归一化）
+- `exp8_summary_report.txt` - 详细数值报告
+
+**运行时间**: ~30-60分钟（纯基准测试，不包含完整训练）
+
+**命令**:
+```bash
+python experiments/exp8_gradient_scaling.py
+python experiments/visualize_exp8.py
+```
+
+**科研意义**:
+- 验证HGG-TopK在不同规模梯度下的高效性
+- 展示算法的时间复杂度特性（接近O(n)或O(n log n)）
+- 对比大规模模型（如GPT）训练场景下的性能优势
+- 单图展示所有算法，便于直观对比和论文引用
+
+---
+
 ## 📈 实验输出位置
 
 所有实验结果保存在以下位置：
@@ -241,7 +323,9 @@ logs/
 ├── exp3_accuracy_loss_curves/    # 实验3日志和JSON数据
 ├── exp4_pipeline_comparison/     # 实验4日志和JSON数据
 ├── exp5_bucket_optimization/     # 实验5日志和JSON数据
-└── exp6_communication_efficiency/ # 实验6日志和JSON数据
+├── exp6_communication_efficiency/ # 实验6日志和JSON数据
+├── exp7_sparsity_comparison/     # 实验7日志和JSON数据
+└── exp8_gradient_scaling/        # 实验8日志和JSON数据
 
 figures/
 ├── exp1/    # 实验1可视化图表
@@ -249,7 +333,9 @@ figures/
 ├── exp3/    # 实验3可视化图表
 ├── exp4/    # 实验4可视化图表
 ├── exp5/    # 实验5可视化图表
-└── exp6/    # 实验6可视化图表
+├── exp6/    # 实验6可视化图表
+├── exp7/    # 实验7可视化图表
+└── exp8/    # 实验8可视化图表
 ```
 
 ---
@@ -263,11 +349,11 @@ python experiments/exp1_algorithm_comparison.py && python experiments/visualize_
 python experiments/exp2_galloping_vs_binary.py && python experiments/visualize_exp2.py
 ```
 
-### 完整论文实验 (6-10小时)
-运行所有6个实验，获得完整的实验数据和图表。
+### 完整论文实验 (10-15小时)
+运行所有8个实验，获得完整的实验数据和图表。
 ```bash
 python experiments/run_experiments.py
-# 选择选项 7: 运行所有实验
+# 选择选项 9: 运行所有实验
 ```
 
 ### 参数优化研究 (2-3小时)
@@ -275,6 +361,18 @@ python experiments/run_experiments.py
 ```bash
 python experiments/exp5_bucket_optimization.py && python experiments/visualize_exp5.py
 python experiments/exp6_communication_efficiency.py && python experiments/visualize_exp6.py
+```
+
+### 稀疏率对比研究 (4-8小时)
+运行实验7，系统性对比不同稀疏率下的算法性能。
+```bash
+python experiments/exp7_sparsity_comparison.py && python experiments/visualize_exp7.py
+```
+
+### 可扩展性分析 (30-60分钟)
+运行实验8，分析梯度量增加时的时间复杂度。
+```bash
+python experiments/exp8_gradient_scaling.py && python experiments/visualize_exp8.py
 ```
 
 ---
@@ -302,9 +400,9 @@ A: 可以修改visualize脚本中的`dpi`参数，默认300，可提升至600。
 
 所有实验完成后，您将获得：
 
-1. **20+张高质量PNG图表** (300 DPI，适合论文)
-2. **6个详细的JSON数据文件** (包含所有性能指标)
-3. **2-3份文本报告** (实验5和实验6的推荐配置)
+1. **30+张高质量PNG图表** (300 DPI，适合论文)
+2. **8个详细的JSON数据文件** (包含所有性能指标)
+3. **3-4份文本报告** (实验5、6、8的推荐配置和详细分析)
 4. **完整的训练日志** (可用于进一步分析)
 
 这些结果可以直接用于：
