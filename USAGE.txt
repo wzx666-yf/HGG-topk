@@ -1,91 +1,54 @@
+﻿=============================================================================
+HGG-TopK-Training 快速使用（新手友好）
 =============================================================================
-HGG-TopK 训练框架 - 快速使用指南
-=============================================================================
 
-1. 快速开始
------------
-   # 一键运行交互式菜单
-   python run.py
+1) 环境准备
+- Python 3.8+；CUDA 对应 PyTorch 2.0+
+- 推荐 Linux/WSL + NVIDIA GPU（分布式后端固定 nccl；Windows 原生通常不支持）
+- 安装依赖：
+  pip install -r requirements.txt
 
-   # 快速对比实验（5 epochs，约10分钟）
-   python quick_compare.py --epochs 5
+2) 最快开始
+- 交互菜单（推荐）：
+  python run.py
+- 三方法快速对比（默认 5 个 epoch）：
+  python quick_compare.py --epochs 5 --gpus 1
+- GPT‑2 小测：
+  python test_gpt2.py
 
-2. 单个实验
------------
-   # Baseline（无压缩）
-   python trainers/trainer.py --model resnet18 --dataset cifar10 --epochs 50
+3) 单次实验模板
+- 视觉 Baseline：
+  python trainers/trainer.py --model resnet18 --dataset cifar10 --epochs 50 --gpus 1
+- TopK 5%：
+  python trainers/trainer.py --model resnet18 --dataset cifar10 --compressor topk --density 0.05 --epochs 50 --gpus 1
+- HGG‑TopK 5%（推荐）：
+  python trainers/trainer.py --model resnet18 --dataset cifar10 --compressor hggtopk --density 0.05 --epochs 50 --gpus 1
+- HGG‑TopK + 流水线：
+  python trainers/trainer.py --model resnet18 --dataset cifar10 --compressor hggtopk --density 0.05 --use-pipeline --epochs 50 --gpus 1
 
-   # HGG-TopK（5%稀疏度）
-   python trainers/trainer.py --model resnet18 --dataset cifar10 \
-       --compressor hggtopk --density 0.05 --epochs 50
+4) 论文套件（交互选择 1–8；9 为全部）
+  python experiments/run_experiments.py
 
-   # TopK对比
-   python trainers/trainer.py --model resnet18 --dataset cifar10 \
-       --compressor topk --density 0.05 --epochs 50
+5) 可视化与报告
+- 概览：
+  python visualization/visualizer.py --summary
+- 通信/稀疏化对比：
+  python visualization/visualizer.py --compare-comm --compare-sparse
+- 全部 PNG 图：
+  python visualization/visualizer.py --plot --output-dir ./figures
+- 文本报告：
+  python visualization/visualizer.py --report
 
-3. 支持的选项
------------
-   模型: resnet18, resnet50, vgg11, vgg16, mobilenet, lstm
-   数据集: cifar10, cifar100, ptb
-   压缩器: topk, gaussian, redsync, hggtopk
-   压缩率: --density 0.05 (5%通信量)
+6) 结果位置
+- 日志 JSON：./logs/{model}_{dataset}_{compressor}_d{density}[_pipeline].json
+- 图表：默认输出到 ./figures（可用 --output-dir 指定）
 
-4. 性能分析
------------
-   # 查看摘要
-   python visualization/visualizer.py --summary
+7) 参数速查
+- 模型：resnet18|resnet50|vgg11|vgg16|mobilenet|lstm|gpt2-small|gpt2-medium
+- 数据：cifar10|cifar100|ptb|wikitext2|openwebtext
+- 压缩：topk|gaussian|dgcsampling|redsync|hggtopk|randomk|topk2|gaussian2
+- 稀疏率：--density 0–1（如 0.05 = 5%）
+- 多卡：--gpus N（单卡可用 --gpus 1）
 
-   # 对比通信时间
-   python visualization/visualizer.py --compare-comm
-
-   # 对比稀疏化时间
-   python visualization/visualizer.py --compare-sparse
-
-   # 生成完整报告
-   python visualization/visualizer.py --report
-
-   # 生成所有图表
-   python visualization/visualizer.py --plot
-
-5. 快速对比实验
------------
-   # 默认对比 baseline + topk + hggtopk
-   python quick_compare.py
-
-   # 自定义对比方法
-   python quick_compare.py --methods baseline topk gaussian hggtopk
-
-   # 指定训练参数
-   python quick_compare.py --model resnet50 --epochs 10 --density 0.01
-
-6. 项目结构
------------
-   core/          - 核心算法（compression.py已优化）
-   trainers/      - 统一训练器（trainer.py已优化）
-   visualization/ - 性能分析和可视化（visualizer.py整合了所有分析功能）
-   experiments/   - 预设实验脚本
-   run.py         - 一键运行脚本
-   quick_compare.py - 快速对比脚本
-
-7. 优化成果
------------
-   ✓ HGG-TopK稀疏化性能提升 5-10倍
-   ✓ 精确的通信时间统计
-   ✓ 支持MobileNetV2模型
-   ✓ 整合的性能分析工具
-   ✓ 精简的项目结构
-
-8. 常见问题
------------
-   Q: CUDA Out of Memory?
-   A: 使用 --batch-size 64 或 --batch-size 32
-
-   Q: 如何使用多GPU?
-   A: 使用 --gpus 2 指定GPU数量
-
-   Q: 如何验证优化效果?
-   A: 运行 python quick_compare.py 对比方法
-
-=============================================================================
-详细文档请查看 README.md
+更多细节：请查阅 BEGINNER_GUIDE.md
 =============================================================================
